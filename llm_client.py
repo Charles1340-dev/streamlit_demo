@@ -57,14 +57,14 @@ class DeepSeekClient:
             "date_fields": df_profile["date_fields"],
             "categorical_fields": df_profile["categorical_fields"],
             "text_fields": df_profile.get("text_fields", []),
-            "columns": df_profile["columns"][:150],
+            "columns": df_profile["columns"][:80],
         }
 
         response = client.chat.completions.create(
             model=self.model,
             response_format={"type": "json_object"},
             temperature=0.1,
-            max_tokens=1400,
+            max_tokens=1000,
             messages=[
                 {"role": "system", "content": ANALYSIS_PLAN_SYSTEM_PROMPT},
                 {
@@ -93,12 +93,14 @@ class DeepSeekClient:
             "stats": analysis_result.get("stats", {}),
             "summary": analysis_result.get("summary", ""),
             "key_findings": analysis_result.get("key_findings", []),
+            "management_takeaways": analysis_result.get("management_takeaways", []),
+            "risks": analysis_result.get("risks", []),
         }
         response = client.chat.completions.create(
             model=self.model,
             response_format={"type": "json_object"},
             temperature=0.2,
-            max_tokens=700,
+            max_tokens=850,
             messages=[
                 {"role": "system", "content": INSIGHT_SYSTEM_PROMPT},
                 {
