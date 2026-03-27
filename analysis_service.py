@@ -9,7 +9,17 @@ from analyzer import apply_analysis_plan, build_fallback_plan, validate_analysis
 from llm_client import DeepSeekClient
 
 
-DEFAULT_AUTO_QUESTION = "请自动生成一个经营数据概览，至少包含分类对比、结构占比和时间趋势。"
+CHART_TYPE_LABELS = {
+    "bar": "柱状图",
+    "line": "折线图",
+    "pie": "饼图",
+    "scatter": "散点图",
+    "area": "面积图",
+    "histogram": "直方图",
+    "box": "箱线图",
+    "funnel": "漏斗图",
+    "treemap": "矩形树图",
+}
 
 
 @dataclass
@@ -24,13 +34,8 @@ class AnalysisRunResult:
     plan_source: str
 
 
-def resolve_question(question: str, auto_mode: bool) -> str:
-    cleaned = (question or "").strip()
-    if cleaned:
-        return cleaned
-    if auto_mode:
-        return DEFAULT_AUTO_QUESTION
-    return ""
+def resolve_question(question: str) -> str:
+    return (question or "").strip()
 
 
 def build_client(api_key: str, model: str, base_url: str) -> DeepSeekClient:
@@ -56,20 +61,20 @@ def summarize_plan(plan: Dict[str, Any]) -> List[str]:
     summary: List[str] = []
     metric_line = "、".join(plan.get("metrics") or ([plan.get("metric")] if plan.get("metric") else []))
     if metric_line:
-        summary.append(f"指标：{metric_line}")
+        summary.append(f"本次分析聚焦的指标：{metric_line}")
     if plan.get("dimension"):
-        summary.append(f"维度：{plan['dimension']}")
+        summary.append(f"主要对比维度：{plan['dimension']}")
     if plan.get("time_field"):
-        summary.append(f"时间字段：{plan['time_field']}")
+        summary.append(f"时间趋势字段：{plan['time_field']}")
     if plan.get("top_n") is not None:
-        summary.append(f"展示范围：前 {plan['top_n']} 项")
+        summary.append(f"结果展示范围：前 {plan['top_n']} 项")
     elif plan.get("return_all"):
-        summary.append("展示范围：全部类别")
+        summary.append("结果展示范围：全部类别")
     if plan.get("sort_order"):
         summary.append(f"排序方向：{'升序' if plan['sort_order'] == 'asc' else '降序'}")
     if plan.get("charts"):
-        chart_types = [chart.get("type", "-") for chart in plan["charts"]]
-        summary.append(f"图表：{' / '.join(chart_types)}")
+        chart_types = [CHART_TYPE_LABELS.get(chart.get("type", "-"), chart.get("type", "-")) for chart in plan["charts"]]
+        summary.append(f"计划输出图表：{' / '.join(chart_types)}")
     return summary
 
 

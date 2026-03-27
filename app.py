@@ -78,9 +78,20 @@ APP_STYLE = """
         margin-bottom: 1rem;
         color: #20324d;
     }
+    .section-title {
+        color: #18365a;
+        font-size: 1.55rem;
+        font-weight: 800;
+        margin: 0.2rem 0 1rem 0;
+    }
+    .section-desc {
+        color: #6781a0;
+        font-size: 0.96rem;
+        margin-bottom: 0.9rem;
+    }
     .metric-card {
         padding: 0.9rem 1rem;
-        min-height: 108px;
+        min-height: 152px;
         background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(243, 248, 255, 0.96));
     }
     .metric-label {
@@ -98,6 +109,11 @@ APP_STYLE = """
     .metric-caption {
         color: #6f84a0;
         font-size: 0.88rem;
+    }
+    .metric-value.file-name {
+        font-size: 1.05rem;
+        line-height: 1.45;
+        word-break: break-word;
     }
     .chart-chip {
         display: inline-block;
@@ -188,6 +204,59 @@ APP_STYLE = """
     .stAlert {
         border-radius: 16px !important;
     }
+    .loading-shell {
+        border-radius: 28px;
+        padding: 3.2rem 2rem;
+        background: linear-gradient(180deg, #3265f6 0%, #3d73ff 100%);
+        box-shadow: 0 26px 60px rgba(41, 91, 207, 0.26);
+        text-align: center;
+        color: #ffffff;
+        margin: 1rem 0 1.4rem 0;
+    }
+    .loading-ring {
+        width: 92px;
+        height: 92px;
+        border-radius: 50%;
+        margin: 0 auto 1.2rem auto;
+        border: 4px solid rgba(255, 255, 255, 0.25);
+        border-top-color: #ffffff;
+        border-right-color: rgba(255,255,255,0.88);
+        animation: spin 1.2s linear infinite;
+    }
+    .loading-title {
+        color: #ffffff;
+        font-size: 1.45rem;
+        font-weight: 800;
+        margin-bottom: 0.55rem;
+    }
+    .loading-subtitle {
+        color: rgba(255,255,255,0.90);
+        font-size: 1rem;
+        margin-bottom: 1rem;
+    }
+    .loading-stage {
+        color: rgba(255,255,255,0.95);
+        font-size: 1.02rem;
+        font-weight: 700;
+        margin-bottom: 1rem;
+    }
+    .loading-stage-list {
+        display: flex;
+        justify-content: center;
+        gap: 0.8rem;
+        flex-wrap: wrap;
+    }
+    .loading-chip {
+        border-radius: 999px;
+        padding: 0.45rem 0.95rem;
+        background: rgba(255,255,255,0.15);
+        color: #ffffff;
+        font-size: 0.92rem;
+    }
+    @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+    }
 </style>
 """
 
@@ -235,8 +304,7 @@ def _render_header() -> None:
             <div class="hero-kicker">智能洞察引擎</div>
             <div class="hero-title">智能文档分析工作台</div>
             <p class="hero-subtitle">
-                上传 Excel 或 CSV，用自然语言描述问题。系统会依据字段结构自适应生成图表、数据摘要和管理层汇报型解读，
-                并在大模型不可用时自动切换到本地分析，保证输出稳定、结果不空、页面更接近可演示产品。
+                上传 Excel 或 CSV，用自然语言提出需求，系统会依据字段结构自适应生成图表、数据摘要和数据分析解读。
             </p>
         </div>
         """,
@@ -307,11 +375,12 @@ def _load_uploaded_file(uploaded_file) -> None:
 
 
 def _render_metric_card(label: str, value: str, caption: str) -> None:
+    value_class = "metric-value file-name" if label == "当前文件" else "metric-value"
     st.markdown(
         f"""
         <div class="metric-card">
             <div class="metric-label">{label}</div>
-            <div class="metric-value">{value}</div>
+            <div class="{value_class}">{value}</div>
             <div class="metric-caption">{caption}</div>
         </div>
         """,
@@ -327,16 +396,17 @@ def _render_dataset_summary() -> None:
         return
 
     meta = st.session_state.file_meta or {}
+    st.markdown("### 数据概览")
     metric_cols = st.columns(4)
     with metric_cols[0]:
         _render_metric_card("当前文件", st.session_state.file_name or "-", "已接入分析工作台")
     with metric_cols[1]:
-        _render_metric_card("数据规模", f"{len(df):,} 行", f"{len(df.columns)} 列")
+        _render_metric_card("数据规模", f"{len(df):,} 行", f"共 {len(df.columns)} 列")
     with metric_cols[2]:
-        _render_metric_card("数值字段", str(len(profile["numeric_fields"])), "可作为指标聚合")
+        _render_metric_card("可分析指标", str(len(profile["numeric_fields"])), "可直接用于聚合或统计")
     with metric_cols[3]:
         sheet_label = meta.get("sheet_name") or "CSV / 单表"
-        _render_metric_card("图表能力", str(len(SUPPORTED_CHARTS)), sheet_label)
+        _render_metric_card("可用图表", str(len(SUPPORTED_CHARTS)), sheet_label)
 
     st.markdown('<div class="panel-card">', unsafe_allow_html=True)
     preview_tab, profile_tab = st.tabs(["数据预览", "字段识别"])
@@ -353,9 +423,10 @@ def _render_dataset_summary() -> None:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-def _render_input_panel() -> tuple[str, bool, bool]:
+def _render_input_panel() -> tuple[str, bool]:
     st.markdown('<div class="panel-card">', unsafe_allow_html=True)
-    st.subheader("分析需求")
+    st.markdown('<div class="section-title">分析需求</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-desc">请明确填写你希望系统分析的问题、对象或图表诉求。为了避免输出无意义内容，本区域现在为必填项。</div>', unsafe_allow_html=True)
     question = st.text_area(
         "请输入分析需求",
         value=st.session_state.last_question,
@@ -363,18 +434,32 @@ def _render_input_panel() -> tuple[str, bool, bool]:
         placeholder="例如：分析各区域订单结构；看不同产品线的趋势变化；总结这份表里最值得汇报的 3 个重点",
         label_visibility="collapsed",
     )
-    controls = st.columns([1, 1, 1.2])
+    controls = st.columns([1.5, 1])
     with controls[0]:
-        auto_mode = st.checkbox("空白时自动生成概览", value=True)
+        st.caption("提示：写清对象、指标、排序方式或图表类型，系统响应会更快、更稳定。")
     with controls[1]:
-        st.caption("提示：写清对象、指标、排序或图表类型，系统响应会更快更稳。")
-    with controls[2]:
         run = st.button("开始分析", type="primary", use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
-    return question, auto_mode, run
+    return question, run
 
 
-def _run_if_needed(question: str, auto_mode: bool, run: bool) -> None:
+def _render_loading_state(stage: str) -> str:
+    return f"""
+    <div class="loading-shell">
+        <div class="loading-ring"></div>
+        <div class="loading-title">系统正在生成分析结果</div>
+        <div class="loading-subtitle">请稍候，当前将依次完成字段检查、计划生成与图表整理。</div>
+        <div class="loading-stage">{stage}</div>
+        <div class="loading-stage-list">
+            <span class="loading-chip">字段与图表条件检查</span>
+            <span class="loading-chip">分析计划匹配</span>
+            <span class="loading-chip">结果与解读整理</span>
+        </div>
+    </div>
+    """
+
+
+def _run_if_needed(question: str, run: bool) -> None:
     if not run:
         return
 
@@ -384,22 +469,22 @@ def _run_if_needed(question: str, auto_mode: bool, run: bool) -> None:
         st.warning("请先上传文件。")
         return
 
-    final_question = resolve_question(question, auto_mode)
+    final_question = resolve_question(question)
     if not final_question:
-        st.warning("请输入分析需求，或勾选自动生成概览。")
+        st.warning("请先填写分析需求，再开始分析。")
         return
 
     st.session_state.last_question = final_question
-    status_box = st.empty()
-    progress_bar = st.progress(0, text="准备开始分析...")
-    status_box.info("步骤 1/3：正在检查数据字段与图表生成条件。")
-    progress_bar.progress(18, text="正在检查数据字段与图表生成条件...")
+    loading_placeholder = st.empty()
+    progress_placeholder = st.empty()
+    loading_placeholder.markdown(_render_loading_state("步骤 1/3：正在检查数据字段与图表生成条件"), unsafe_allow_html=True)
+    progress_bar = progress_placeholder.progress(16, text="正在检查数据字段与图表生成条件...")
     client = build_client(
         api_key=st.session_state.api_key_input,
         model=st.session_state.model_name,
         base_url=st.session_state.base_url,
     )
-    status_box.info("步骤 2/3：正在生成分析计划并匹配图表。")
+    loading_placeholder.markdown(_render_loading_state("步骤 2/3：正在生成分析计划并匹配图表"), unsafe_allow_html=True)
     progress_bar.progress(52, text="正在生成分析计划并匹配图表...")
     run_result = run_analysis(
         df=df,
@@ -408,7 +493,7 @@ def _run_if_needed(question: str, auto_mode: bool, run: bool) -> None:
         file_name=st.session_state.file_name,
         client=client,
     )
-    status_box.info("步骤 3/3：正在整理图表结果与汇报解读。")
+    loading_placeholder.markdown(_render_loading_state("步骤 3/3：正在整理图表结果与解读内容"), unsafe_allow_html=True)
     progress_bar.progress(88, text="正在整理图表结果与汇报解读...")
     st.session_state.analysis_result = {
         "question": run_result.question,
@@ -421,15 +506,17 @@ def _run_if_needed(question: str, auto_mode: bool, run: bool) -> None:
         "plan_source": run_result.plan_source,
     }
     progress_bar.progress(100, text="分析完成")
-    status_box.success("分析完成，结果已更新。")
+    loading_placeholder.empty()
+    progress_placeholder.empty()
 
 
 def _render_plan_summary(analysis_result: Dict[str, Any]) -> None:
     plan = analysis_result["plan"]
     st.markdown('<div class="panel-card">', unsafe_allow_html=True)
-    st.subheader("分析理解")
+    st.markdown('<div class="section-title">分析理解</div>', unsafe_allow_html=True)
     plan_source = "大模型生成" if analysis_result.get("plan_source") == "llm" else "本地规则生成"
     st.caption(f"计划来源：{plan_source}")
+    st.write("系统已经根据你的需求，对主要分析对象、指标、时间口径和输出图表进行了整理：")
     for line in summarize_plan(plan):
         st.write(f"- {line}")
 
@@ -460,7 +547,10 @@ def _render_analysis_result() -> None:
     elif analysis_result.get("llm_error"):
         st.info(f"本次未成功调用大模型，已切换本地兜底分析：{analysis_result['llm_error']}")
 
-    st.markdown(f"**当前需求**：{analysis_result['question']}")
+    st.markdown('<div class="panel-card">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">本次需求</div>', unsafe_allow_html=True)
+    st.write(analysis_result["question"])
+    st.markdown("</div>", unsafe_allow_html=True)
     _render_plan_summary(analysis_result)
 
     chart_specs: List[Dict[str, Any]] = analysis_result["result"].get("charts", [])
@@ -523,21 +613,17 @@ def main() -> None:
     _render_header()
     _render_sidebar()
 
-    left, right = st.columns([1.02, 1.48], gap="large")
+    st.markdown('<div class="panel-card">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">上传数据</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-desc">先接入数据，再明确填写分析需求。页面将按从上到下的顺序展示数据、理解过程和图表结果。</div>', unsafe_allow_html=True)
+    uploaded_file = st.file_uploader("上传表格文件", type=["xlsx", "xls", "csv"], label_visibility="collapsed")
+    _load_uploaded_file(uploaded_file)
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    with left:
-        st.markdown('<div class="panel-card">', unsafe_allow_html=True)
-        st.subheader("上传数据")
-        uploaded_file = st.file_uploader("上传表格文件", type=["xlsx", "xls", "csv"], label_visibility="collapsed")
-        _load_uploaded_file(uploaded_file)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        _render_dataset_summary()
-        question, auto_mode, run = _render_input_panel()
-        _run_if_needed(question, auto_mode, run)
-
-    with right:
-        _render_analysis_result()
+    _render_dataset_summary()
+    question, run = _render_input_panel()
+    _run_if_needed(question, run)
+    _render_analysis_result()
 
 
 main()
