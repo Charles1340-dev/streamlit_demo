@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import traceback
 from typing import Any, Dict, List
 
@@ -11,13 +12,27 @@ import streamlit as st
 from analysis_service import build_client, resolve_question, run_analysis, summarize_plan
 from chart_builder import build_plotly_figure
 from excel_parser import build_dataframe_profile, load_uploaded_table
+from llm_client import is_local_or_private_base_url
 
-st.set_page_config(page_title="智能表格分析工作台", page_icon="📊", layout="wide")
+st.set_page_config(page_title="智能表格分析工作台", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 
 APP_STYLE = """
 <style>
-    #MainMenu, header [data-testid="stToolbar"], .stDeployButton {
+    #MainMenu, .stDeployButton {
         display: none !important;
+    }
+    header[data-testid="stHeader"] {
+        background: transparent !important;
+        height: 2.8rem;
+    }
+    [data-testid="stToolbar"] {
+        top: 0.35rem;
+        right: 0.75rem;
+    }
+    [data-testid="collapsedControl"] {
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
     }
     .stApp {
         background:
@@ -35,7 +50,7 @@ APP_STYLE = """
         color: #20324d;
     }
     .block-container {
-        padding-top: 2.2rem;
+        padding-top: 0.6rem;
         padding-bottom: 3rem;
         max-width: 1280px;
     }
@@ -47,8 +62,8 @@ APP_STYLE = """
         backdrop-filter: blur(12px);
     }
     .hero-card {
-        padding: 1.6rem 1.8rem;
-        margin-bottom: 1rem;
+        padding: 1.45rem 1.8rem;
+        margin-bottom: 0.8rem;
         background:
             linear-gradient(135deg, rgba(19, 72, 135, 0.96), rgba(33, 109, 160, 0.94)),
             linear-gradient(90deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
@@ -75,7 +90,7 @@ APP_STYLE = """
     }
     .panel-card {
         padding: 1.1rem 1.2rem 0.4rem 1.2rem;
-        margin-bottom: 1rem;
+        margin-bottom: 0.85rem;
         color: #20324d;
     }
     .section-title {
@@ -87,7 +102,38 @@ APP_STYLE = """
     .section-desc {
         color: #6781a0;
         font-size: 0.96rem;
+        margin-bottom: 0.55rem;
+    }
+    .leader-note {
+        border-radius: 18px;
+        padding: 1rem 1.1rem;
+        margin: 0.65rem 0 0.9rem 0;
+        background: linear-gradient(90deg, rgba(24, 97, 182, 0.10), rgba(72, 169, 214, 0.12));
+        border: 1px solid rgba(65, 117, 188, 0.12);
+        color: #224264;
+        font-size: 0.98rem;
+        line-height: 1.7;
+    }
+    .leader-note strong {
+        color: #173250;
+    }
+    .exec-card {
+        border-radius: 18px;
+        padding: 1rem 1.1rem;
         margin-bottom: 0.9rem;
+        background: linear-gradient(180deg, rgba(245, 249, 255, 0.98), rgba(236, 244, 255, 0.96));
+        border: 1px solid rgba(68, 104, 156, 0.12);
+    }
+    .exec-card-title {
+        color: #163457;
+        font-size: 1rem;
+        font-weight: 800;
+        margin-bottom: 0.45rem;
+    }
+    .exec-card-body {
+        color: #2b4768;
+        line-height: 1.8;
+        white-space: normal;
     }
     .metric-card {
         padding: 0.9rem 1rem;
@@ -124,6 +170,31 @@ APP_STYLE = """
         background: rgba(229, 239, 250, 0.95);
         color: #29486b;
         font-size: 0.84rem;
+    }
+    .mode-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        padding: 0.42rem 0.8rem;
+        border-radius: 999px;
+        font-size: 0.9rem;
+        font-weight: 700;
+        margin: 0.2rem 0 0.55rem 0;
+    }
+    .mode-chip.cloud {
+        background: rgba(30, 120, 220, 0.12);
+        color: #12539a;
+        border: 1px solid rgba(30, 120, 220, 0.18);
+    }
+    .mode-chip.local {
+        background: rgba(25, 162, 123, 0.12);
+        color: #166c57;
+        border: 1px solid rgba(25, 162, 123, 0.18);
+    }
+    .mode-chip.fallback {
+        background: rgba(245, 164, 40, 0.14);
+        color: #8f5a00;
+        border: 1px solid rgba(245, 164, 40, 0.22);
     }
     .stButton > button,
     [data-testid="baseButton-secondary"],
@@ -162,6 +233,10 @@ APP_STYLE = """
     [data-testid="stFileUploaderDropzone"] * {
         color: #2a4565 !important;
     }
+    [data-testid="stFileUploaderDropzoneInstructions"] {
+        width: 100% !important;
+        flex: 1 1 auto !important;
+    }
     [data-testid="stFileUploaderDropzoneInstructions"] > div:first-child {
         visibility: hidden;
         position: relative;
@@ -177,13 +252,17 @@ APP_STYLE = """
     [data-testid="stFileUploaderDropzoneInstructions"] > div:nth-child(2) {
         visibility: hidden;
         position: relative;
+        white-space: nowrap !important;
     }
     [data-testid="stFileUploaderDropzoneInstructions"] > div:nth-child(2)::after {
-        content: "支持 XLSX、XLS、CSV，单文件大小不超过 200MB";
+        content: "支持 XLSX、XLS、CSV，单文件不超过 200MB";
         visibility: visible;
         position: absolute;
         inset: 0;
         color: #5c7390;
+        white-space: nowrap !important;
+        width: max-content;
+        max-width: none;
     }
     [data-testid="stBaseButton-secondary"] {
         color: transparent !important;
@@ -203,6 +282,10 @@ APP_STYLE = """
     }
     .stAlert {
         border-radius: 16px !important;
+    }
+    [data-testid="stSidebarUserContent"] .stExpander {
+        border-radius: 18px;
+        overflow: hidden;
     }
     .loading-shell {
         border-radius: 28px;
@@ -261,6 +344,7 @@ APP_STYLE = """
 """
 
 SUPPORTED_CHARTS = ["bar", "line", "pie", "scatter", "area", "histogram", "box", "funnel", "treemap"]
+TEN_THOUSAND = 10000
 SUPPORTED_CHART_LABELS = {
     "bar": "柱状图",
     "line": "折线图",
@@ -274,8 +358,102 @@ SUPPORTED_CHART_LABELS = {
 }
 MODEL_PRESETS = {
     "DeepSeek": {"model_name": "deepseek-chat", "base_url": "https://api.deepseek.com"},
+    "本地大模型（OpenAI兼容）": {"model_name": "", "base_url": "http://127.0.0.1:11434/v1"},
+    "Ollama": {"model_name": "qwen2.5:7b", "base_url": "http://127.0.0.1:11434/v1"},
+    "vLLM / LM Studio": {"model_name": "qwen2.5-7b-instruct", "base_url": "http://127.0.0.1:1234/v1"},
     "OpenAI 兼容自定义接口": {"model_name": "", "base_url": ""},
 }
+
+
+def _clean_display_text(value: Any) -> str:
+    text = str(value or "")
+    text = text.replace("\r", "\n")
+    text = re.sub(r"\n+", "\n", text)
+    lines = [" ".join(part.strip().split()) for part in text.split("\n")]
+    lines = [line for line in lines if line]
+    return "\n".join(lines)
+
+
+def _clean_display_list(values: List[Any]) -> List[str]:
+    cleaned: List[str] = []
+    for item in values or []:
+        text = _clean_display_text(item)
+        if text:
+            cleaned.append(text)
+    return cleaned
+
+
+def _render_bullets(items: List[str]) -> None:
+    cleaned = _clean_display_list(items)
+    if not cleaned:
+        return
+    st.markdown("\n".join([f"- {item}" for item in cleaned]))
+
+
+def _render_exec_card(title: str, body: str) -> None:
+    cleaned_body = _clean_display_text(body)
+    if not cleaned_body:
+        return
+    st.markdown(
+        f"""
+        <div class="exec-card">
+            <div class="exec-card-title">{title}</div>
+            <div class="exec-card-body">{cleaned_body}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _looks_like_date_column(column_name: str, series: pd.Series) -> bool:
+    lowered = (column_name or "").lower()
+    if any(keyword in lowered for keyword in ["日期", "时间", "月份", "年月", "date", "time", "month", "day", "year"]):
+        return True
+    sample = series.dropna().head(8)
+    if sample.empty:
+        return False
+    parsed = pd.to_datetime(sample.astype(str), errors="coerce")
+    return parsed.notna().mean() >= 0.75
+
+
+def _to_chinese_date_text(value: Any) -> Any:
+    if value is None or value == "":
+        return value
+    text = str(value).strip()
+    parsed = pd.to_datetime(text, errors="coerce")
+    if pd.isna(parsed):
+        return value
+    if len(text) <= 7:
+        return parsed.strftime("%Y年%m月")
+    if any(token in text for token in [":", "T"]):
+        return parsed.strftime("%Y年%m月%d日 %H:%M")
+    return parsed.strftime("%Y年%m月%d日")
+
+
+def _format_chart_table(df: pd.DataFrame, chart: Dict[str, Any]) -> pd.DataFrame:
+    formatted = df.copy()
+    x_field = chart.get("x_field")
+    y_fields = chart.get("y_fields") or []
+    y_field = chart.get("y_field")
+    metric = chart.get("metric")
+
+    if x_field and x_field in formatted.columns and _looks_like_date_column(x_field, formatted[x_field]):
+        formatted[x_field] = formatted[x_field].map(_to_chinese_date_text)
+
+    numeric_targets = set(field for field in y_fields if field in formatted.columns)
+    if y_field and y_field in formatted.columns:
+        numeric_targets.add(y_field)
+    if metric and metric in formatted.columns:
+        numeric_targets.add(metric)
+    if chart.get("type") == "scatter" and x_field and x_field in formatted.columns:
+        numeric_targets.add(x_field)
+
+    for column in list(numeric_targets):
+        numeric = pd.to_numeric(formatted[column], errors="coerce")
+        if numeric.notna().mean() >= 0.8:
+            formatted[column] = (numeric / TEN_THOUSAND).map(lambda v: f"{v:,.2f} 万" if pd.notna(v) else "")
+
+    return formatted
 
 
 def _init_state() -> None:
@@ -288,6 +466,7 @@ def _init_state() -> None:
         "file_meta": {},
         "api_key_input": os.getenv("DEEPSEEK_API_KEY", ""),
         "provider_preset": "DeepSeek",
+        "last_provider_preset": "DeepSeek",
         "model_name": "deepseek-chat",
         "base_url": "https://api.deepseek.com",
     }
@@ -296,15 +475,31 @@ def _init_state() -> None:
             st.session_state[key] = value
 
 
+def _get_connection_mode() -> tuple[str, str]:
+    base_url = st.session_state.base_url.strip()
+    model_name = st.session_state.model_name.strip()
+    api_key = st.session_state.api_key_input.strip() or os.getenv("DEEPSEEK_API_KEY", "").strip()
+
+    if model_name and is_local_or_private_base_url(base_url):
+        return "local", "当前模式：本地模型"
+    if model_name and api_key:
+        return "cloud", "当前模式：云端模型"
+    return "fallback", "当前模式：规则兜底"
+
+
+def _render_mode_badge(mode_key: str, mode_text: str) -> None:
+    st.markdown(f'<div class="mode-chip {mode_key}">{mode_text}</div>', unsafe_allow_html=True)
+
+
 def _render_header() -> None:
     st.markdown(APP_STYLE, unsafe_allow_html=True)
     st.markdown(
         """
         <div class="hero-card">
             <div class="hero-kicker">智能洞察引擎</div>
-            <div class="hero-title">智能文档分析工作台</div>
+            <div class="hero-title">智能表格分析工作台</div>
             <p class="hero-subtitle">
-                上传 Excel 或 CSV，用自然语言提出需求，系统会依据字段结构自适应生成图表、数据摘要和数据分析解读。
+                上传 Excel 或 CSV，提出需求，系统会依据文档自适应生成图表、数据摘要和数据分析解读。
             </p>
         </div>
         """,
@@ -315,31 +510,38 @@ def _render_header() -> None:
 def _render_sidebar() -> None:
     with st.sidebar:
         st.subheader("控制台")
-        with st.expander("模型与连接配置", expanded=False):
+        with st.expander("模型与连接配置", expanded=True):
             selected_preset = st.selectbox("连接模板", list(MODEL_PRESETS.keys()), key="provider_preset")
             preset = MODEL_PRESETS[selected_preset]
-            if selected_preset == "DeepSeek" and not st.session_state.model_name:
+            if st.session_state.last_provider_preset != selected_preset:
                 st.session_state.model_name = preset["model_name"]
-            if selected_preset == "DeepSeek" and not st.session_state.base_url:
                 st.session_state.base_url = preset["base_url"]
+                st.session_state.last_provider_preset = selected_preset
 
             st.text_input(
                 "API Key",
                 key="api_key_input",
                 type="password",
-                help="支持 OpenAI 兼容接口，默认填写 DeepSeek 配置即可使用。",
+                help="云端模型通常需要 API Key；本地/内网 OpenAI 兼容模型可留空。",
             )
             st.text_input("模型名", key="model_name")
             st.text_input("Base URL", key="base_url")
 
+        current_base_url = st.session_state.base_url.strip()
+        local_mode = is_local_or_private_base_url(current_base_url)
+        mode_key, mode_text = _get_connection_mode()
+        _render_mode_badge(mode_key, mode_text)
         if st.session_state.api_key_input.strip() or os.getenv("DEEPSEEK_API_KEY"):
             st.success("大模型状态：已配置 API Key")
+        elif local_mode and st.session_state.model_name.strip():
+            st.success("大模型状态：当前已切换为本地 / 内网模型，可免 API Key 调用")
         else:
-            st.warning("大模型状态：未配置 API Key，将走本地兜底")
+            st.warning("大模型状态：未配置可用模型连接，将走本地规则兜底分析")
 
         st.markdown("---")
         st.caption("支持 `.xlsx` / `.xls` / `.csv`，默认读取第一个 Sheet。")
         st.caption("系统会根据字段内容自适应选择分析方式，不限定财务场景。")
+        st.caption("如涉及数据隐私，可切换到本地大模型、Ollama 或 vLLM / LM Studio 预设。")
         st.caption("图表输出范围已固定为以下类型：")
         st.markdown("".join([f'<span class="chart-chip">{SUPPORTED_CHART_LABELS[item]}</span>' for item in SUPPORTED_CHARTS]), unsafe_allow_html=True)
 
@@ -392,7 +594,14 @@ def _render_dataset_summary() -> None:
     df = st.session_state.df
     profile = st.session_state.profile
     if df is None or profile is None:
-        st.info("先上传一份业务表格，左侧会显示数据预览、字段识别和分析输入区。")
+        st.markdown(
+            """
+            <div class="leader-note">
+                <strong>上传后将自动输出：</strong> 核心指标概览、结构对比、趋势变化、重点异常与汇报解读。
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         return
 
     meta = st.session_state.file_meta or {}
@@ -403,10 +612,18 @@ def _render_dataset_summary() -> None:
     with metric_cols[1]:
         _render_metric_card("数据规模", f"{len(df):,} 行", f"共 {len(df.columns)} 列")
     with metric_cols[2]:
-        _render_metric_card("可分析指标", str(len(profile["numeric_fields"])), "可直接用于聚合或统计")
+        _render_metric_card(
+            "可分析指标",
+            f"{len(profile['numeric_fields'])} 个字段",
+            "表示表中可直接做求和、均值、对比等分析的数值列",
+        )
     with metric_cols[3]:
         sheet_label = meta.get("sheet_name") or "CSV / 单表"
-        _render_metric_card("可用图表", str(len(SUPPORTED_CHARTS)), sheet_label)
+        _render_metric_card(
+            "可用图表",
+            f"{len(SUPPORTED_CHARTS)} 类",
+            f"系统支持的图表类型数量，当前数据来自 {sheet_label}",
+        )
 
     st.markdown('<div class="panel-card">', unsafe_allow_html=True)
     preview_tab, profile_tab = st.tabs(["数据预览", "字段识别"])
@@ -426,7 +643,7 @@ def _render_dataset_summary() -> None:
 def _render_input_panel() -> tuple[str, bool]:
     st.markdown('<div class="panel-card">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">分析需求</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-desc">请明确填写你希望系统分析的问题、对象或图表诉求。为了避免输出无意义内容，本区域现在为必填项。</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-desc">请明确填写你希望系统分析的问题、对象或图表诉求。页面会基于你的输入生成适合汇报的图表和结论，因此本区域为必填项。</div>', unsafe_allow_html=True)
     question = st.text_area(
         "请输入分析需求",
         value=st.session_state.last_question,
@@ -516,9 +733,15 @@ def _render_plan_summary(analysis_result: Dict[str, Any]) -> None:
     st.markdown('<div class="section-title">分析理解</div>', unsafe_allow_html=True)
     plan_source = "大模型生成" if analysis_result.get("plan_source") == "llm" else "本地规则生成"
     st.caption(f"计划来源：{plan_source}")
-    st.write("系统已经根据你的需求，对主要分析对象、指标、时间口径和输出图表进行了整理：")
-    for line in summarize_plan(plan):
-        st.write(f"- {line}")
+    st.markdown(
+        """
+        <div class="leader-note">
+            <strong>系统判断说明：</strong> 已根据你的问题自动识别核心分析对象、关键指标、时间口径与最合适的图表方式，下面内容可直接作为汇报前的分析说明参考。
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    _render_bullets(summarize_plan(plan))
 
     warnings = analysis_result.get("plan_warnings") or []
     warnings += analysis_result.get("result", {}).get("warnings", [])
@@ -528,8 +751,7 @@ def _render_plan_summary(analysis_result: Dict[str, Any]) -> None:
             unique_warnings.append(item)
     if unique_warnings:
         st.warning("已根据实际字段做了自动修正：")
-        for item in unique_warnings:
-            st.write(f"- {item}")
+        _render_bullets(unique_warnings)
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -543,13 +765,16 @@ def _render_analysis_result() -> None:
         return
 
     if analysis_result.get("llm_used"):
+        mode_key, mode_text = _get_connection_mode()
+        _render_mode_badge(mode_key, mode_text)
         st.success("本次分析已调用大模型生成计划与结论。")
     elif analysis_result.get("llm_error"):
+        _render_mode_badge("fallback", "当前模式：规则兜底")
         st.info(f"本次未成功调用大模型，已切换本地兜底分析：{analysis_result['llm_error']}")
 
     st.markdown('<div class="panel-card">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">本次需求</div>', unsafe_allow_html=True)
-    st.write(analysis_result["question"])
+    _render_exec_card("需求描述", analysis_result["question"])
     st.markdown("</div>", unsafe_allow_html=True)
     _render_plan_summary(analysis_result)
 
@@ -566,40 +791,36 @@ def _render_analysis_result() -> None:
             table = chart.get("table") or []
             if table:
                 with st.expander(f"查看图表 {idx} 对应数据", expanded=(idx == 1)):
-                    st.dataframe(pd.DataFrame(table), use_container_width=True, height=260)
+                    st.dataframe(_format_chart_table(pd.DataFrame(table), chart), use_container_width=True, height=260)
             st.markdown("</div>", unsafe_allow_html=True)
 
     insights = analysis_result["insights"]
     st.markdown('<div class="panel-card">', unsafe_allow_html=True)
     st.subheader("AI 汇报解读")
-    st.markdown(f"**摘要**：{insights.get('summary', '-')}")
+    _render_exec_card("摘要", insights.get("summary", "-"))
 
     executive_brief = insights.get("executive_brief")
     if executive_brief:
-        st.markdown("**管理层速览**")
-        st.write(executive_brief)
+        _render_exec_card("管理层速览", executive_brief)
 
     findings = insights.get("key_findings", [])
     if findings:
         st.markdown("**关键发现**")
-        for item in findings:
-            st.write(f"- {item}")
+        _render_bullets(findings)
 
     takeaways = insights.get("management_takeaways", [])
     if takeaways:
         st.markdown("**汇报要点**")
-        for item in takeaways:
-            st.write(f"- {item}")
+        _render_bullets(takeaways)
 
     risks = insights.get("risks", [])
     if risks:
         st.markdown("**风险与提醒**")
-        for item in risks:
-            st.write(f"- {item}")
+        _render_bullets(risks)
 
     suggestion = insights.get("suggestion")
     if suggestion:
-        st.markdown(f"**建议**：{suggestion}")
+        _render_exec_card("建议", suggestion)
 
     with st.expander("查看分析计划 JSON", expanded=False):
         st.code(json.dumps(analysis_result["plan"], ensure_ascii=False, indent=2), language="json")
@@ -615,7 +836,7 @@ def main() -> None:
 
     st.markdown('<div class="panel-card">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">上传数据</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-desc">先接入数据，再明确填写分析需求。页面将按从上到下的顺序展示数据、理解过程和图表结果。</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-desc">请先上传待分析表格。系统会自动识别字段结构，并生成适合汇报场景的图表与文字解读。</div>', unsafe_allow_html=True)
     uploaded_file = st.file_uploader("上传表格文件", type=["xlsx", "xls", "csv"], label_visibility="collapsed")
     _load_uploaded_file(uploaded_file)
     st.markdown("</div>", unsafe_allow_html=True)

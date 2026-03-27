@@ -1,12 +1,34 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+from urllib.parse import urlparse
 from typing import Any, Dict
 
 from openai import OpenAI
 
 from prompts import ANALYSIS_PLAN_SYSTEM_PROMPT, INSIGHT_SYSTEM_PROMPT
+
+
+def is_local_or_private_base_url(base_url: str | None) -> bool:
+    raw = (base_url or "").strip()
+    if not raw:
+        return False
+    try:
+        parsed = urlparse(raw)
+        host = (parsed.hostname or "").strip().lower()
+    except Exception:
+        return False
+
+    if host in {"localhost", "127.0.0.1", "0.0.0.0"} or host.endswith(".local"):
+        return True
+
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_private or ip.is_loopback
+    except ValueError:
+        return False
 
 
 class DeepSeekClient:
@@ -20,9 +42,11 @@ class DeepSeekClient:
         self.api_key = (raw_key or "").strip()
         self.model = (model or "deepseek-chat").strip()
         self.base_url = (base_url or "https://api.deepseek.com").strip()
+        self.allow_empty_api_key = is_local_or_private_base_url(self.base_url)
         self.client = None
-        if self.api_key:
-            self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        if self.api_key or self.allow_empty_api_key:
+            # Local or private OpenAI-compatible services often do not require auth.
+            self.client = OpenAI(api_key=self.api_key or "local-no-key", base_url=self.base_url)
 
     @property
     def is_configured(self) -> bool:
@@ -30,7 +54,7 @@ class DeepSeekClient:
 
     def _require_client(self) -> OpenAI:
         if not self.client:
-            raise RuntimeError("未配置 DeepSeek API Key")
+            raise RuntimeError("未配置 API Key，且当前也不是可免密访问的本地/内网模型地址")
         return self.client
 
     def _json_loads(self, text: str) -> Dict[str, Any]:
