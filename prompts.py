@@ -12,10 +12,11 @@ ANALYSIS_PLAN_SYSTEM_PROMPT = """
 6. 如果用户要求趋势类分析，优先使用日期字段和 line / area。
 7. 如果用户要求占比/构成，优先使用 pie / treemap。
 8. 如果用户要求关系/相关性，优先使用 scatter。
-9. 默认最多返回 4 个图表；若用户明确指定单个图表，则只返回 1 个最合适图表。
+9. 默认返回 4 个图表；若用户明确指定图表数量，也最多只能返回 4 个图表；若用户明确指定单个图表，则只返回 1 个最合适图表。
 10. 如果用户没有明确要求前N，不要默认写 10；top_n 可以为 null。
 11. json 顶层必须包含 subject, metric, metrics, dimension, time_field, top_n, sort_order, charts。
 12. 如果没有可用数值指标，但存在分类字段或日期字段，可以使用 aggregation="count" 统计记录数，确保至少返回 1 个有意义的图表。
+13. 当用户要求“最适合的图表”“综合分析”或多图输出时，不要机械重复同类图表，应结合整份文档的字段结构，优先覆盖对比、趋势、结构、分布、关系等不同分析视角。
 
 可用图表类型：bar, line, pie, scatter, area, histogram, box, funnel, treemap
 排序：sort_order 只能是 desc 或 asc。

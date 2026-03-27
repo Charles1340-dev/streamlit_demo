@@ -643,7 +643,7 @@ def _render_dataset_summary() -> None:
 def _render_input_panel() -> tuple[str, bool]:
     st.markdown('<div class="panel-card">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">分析需求</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-desc">请明确填写你希望系统分析的问题、对象或图表诉求。页面会基于你的输入生成适合汇报的图表和结论，因此本区域为必填项。</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-desc">请明确填写你希望系统分析的问题、对象或图表诉求。页面会基于你的输入生成适合汇报的图表和结论，因此本区域为必填项，且单次最多输出 4 个图表。</div>', unsafe_allow_html=True)
     question = st.text_area(
         "请输入分析需求",
         value=st.session_state.last_question,
@@ -653,7 +653,7 @@ def _render_input_panel() -> tuple[str, bool]:
     )
     controls = st.columns([1.5, 1])
     with controls[0]:
-        st.caption("提示：写清对象、指标、排序方式或图表类型，系统响应会更快、更稳定。")
+        st.caption("提示：写清对象、指标、排序方式或图表类型，系统响应会更快、更稳定；单次最多生成 4 个图表。")
     with controls[1]:
         run = st.button("开始分析", type="primary", use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)

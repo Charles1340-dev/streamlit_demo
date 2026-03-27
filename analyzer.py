@@ -65,6 +65,8 @@ CN_NUM = {
     "九": 9,
     "十": 10,
 }
+DEFAULT_MAX_CHARTS = 4
+MAX_REQUESTED_CHARTS = 4
 
 
 def _score_field(field: str, keywords: List[str]) -> float:
@@ -261,6 +263,21 @@ def _extract_top_n(question: str, default: Optional[int] = None) -> Optional[int
     return default
 
 
+def _extract_chart_count(question: str, default: int = DEFAULT_MAX_CHARTS) -> int:
+    q = (question or "").strip()
+    if not q:
+        return default
+    match = re.search(r"(\d+)\s*(个|张)?\s*(图表|图)", q)
+    if match:
+        return max(1, min(int(match.group(1)), MAX_REQUESTED_CHARTS))
+    match = re.search(r"([一二三四五六七八九十])\s*(个|张)?\s*(图表|图)", q)
+    if match:
+        return max(1, min(CN_NUM.get(match.group(1), default), MAX_REQUESTED_CHARTS))
+    if any(token in q for token in ["最适合的图表", "多图分析", "多维分析", "综合分析"]):
+        return 5
+    return default
+
+
 
 def _extract_chart_types(question: str) -> List[str]:
     found: List[str] = []
@@ -348,6 +365,7 @@ def validate_analysis_plan(
 ) -> Tuple[Dict[str, Any], List[str]]:
     subject = str(plan.get("subject") or default_subject or "自动分析")
     requested_chart_types = _extract_chart_types(subject)
+    requested_chart_count = _extract_chart_count(subject)
     normalized_plan = {
         "subject": subject,
         "metric": _resolve_metric(plan.get("metric"), profile["numeric_fields"]),
@@ -358,6 +376,7 @@ def validate_analysis_plan(
         "sort_order": plan.get("sort_order") if plan.get("sort_order") in VALID_SORT_ORDERS else "desc",
         "return_all": bool(plan.get("return_all")),
         "requested_chart_types": requested_chart_types,
+        "requested_chart_count": requested_chart_count,
         "unavailable_chart_types": [],
         "charts": [],
     }
@@ -370,7 +389,7 @@ def validate_analysis_plan(
         chart_plans = []
         warnings.append("分析计划里的图表配置格式不正确，已改用兜底规则重新生成。")
 
-    for chart in chart_plans[:4]:
+    for chart in chart_plans[:requested_chart_count]:
         if not isinstance(chart, dict):
             warnings.append("发现无法识别的图表配置，已自动跳过。")
             continue
@@ -402,6 +421,41 @@ def validate_analysis_plan(
         if not normalized_plan["metrics"]:
             normalized_plan["metrics"] = first_chart.get("metrics") or ([first_chart.get("metric")] if first_chart.get("metric") else [])
 
+    if len(normalized_plan["charts"]) < requested_chart_count and not requested_chart_types:
+        fallback_plan = build_fallback_plan(normalized_plan["subject"], profile)
+        existing_keys = {
+            (
+                item.get("type"),
+                item.get("title"),
+                item.get("dimension"),
+                item.get("time_field"),
+                item.get("metric"),
+                tuple(item.get("metrics") or []),
+            )
+            for item in normalized_plan["charts"]
+        }
+        for chart in fallback_plan.get("charts", []):
+            normalized_chart = _normalize_chart_plan(chart, profile, fallback_plan)
+            key = (
+                normalized_chart.get("type"),
+                normalized_chart.get("title"),
+                normalized_chart.get("dimension"),
+                normalized_chart.get("time_field"),
+                normalized_chart.get("metric"),
+                tuple(normalized_chart.get("metrics") or []),
+            )
+            if key in existing_keys:
+                continue
+            is_supported, reason = _is_chart_supported(normalized_chart["type"], profile)
+            if not is_supported:
+                if reason:
+                    normalized_plan["unavailable_chart_types"].append({"type": normalized_chart["type"], "reason": reason})
+                continue
+            normalized_plan["charts"].append(normalized_chart)
+            existing_keys.add(key)
+            if len(normalized_plan["charts"]) >= requested_chart_count:
+                break
+
     if not normalized_plan["charts"] and requested_chart_types:
         unavailable = normalized_plan["unavailable_chart_types"]
         for chart_type in requested_chart_types:
@@ -423,7 +477,11 @@ def validate_analysis_plan(
         normalized_plan["return_all"] = fallback_plan.get("return_all", False)
         normalized_plan["requested_chart_types"] = fallback_plan.get("requested_chart_types", [])
         normalized_plan["unavailable_chart_types"] = fallback_plan.get("unavailable_chart_types", [])
-        normalized_plan["charts"] = [_normalize_chart_plan(chart, profile, fallback_plan) for chart in fallback_plan.get("charts", [])[:4]]
+        normalized_plan["requested_chart_count"] = fallback_plan.get("requested_chart_count", requested_chart_count)
+        normalized_plan["charts"] = [
+            _normalize_chart_plan(chart, profile, fallback_plan)
+            for chart in fallback_plan.get("charts", [])[: normalized_plan["requested_chart_count"]]
+        ]
         warnings.append("原始计划缺少有效图表，已自动切换为本地规则生成的分析计划。")
 
     if not normalized_plan["metrics"] and normalized_plan["metric"]:
@@ -452,6 +510,7 @@ def build_fallback_plan(question: str, profile: Dict[str, Any]) -> Dict[str, Any
     dimension = _pick_dimension(question, profile)
     time_field = _pick_time_field(question, profile)
     explicit_chart_types = _extract_chart_types(question)
+    requested_chart_count = _extract_chart_count(question)
     top_n = _extract_top_n(question, default=None)
     sort_order = _pick_sort_order(question)
 
@@ -464,7 +523,97 @@ def build_fallback_plan(question: str, profile: Dict[str, Any]) -> Dict[str, Any
     unavailable_chart_types: List[Dict[str, str]] = []
 
     def add_chart(item: Dict[str, Any]) -> None:
+        chart_type = item.get("type")
+        title = item.get("title")
+        if any(existing.get("type") == chart_type and existing.get("title") == title for existing in charts):
+            return
         charts.append(item)
+
+    def add_dimension_views(target_dimension: Optional[str], target_metric: Optional[str], target_metrics: List[str]) -> None:
+        if not target_dimension or not target_metric:
+            return
+        add_chart(
+            {
+                "type": "bar",
+                "title": f"{target_dimension}维度的{target_metric}对比",
+                "dimension": target_dimension,
+                "metric": target_metric,
+                "metrics": target_metrics or [target_metric],
+                "aggregation": "sum" if has_numeric_metric else "count",
+                "top_n": top_n,
+                "sort_order": sort_order,
+            }
+        )
+        add_chart(
+            {
+                "type": "pie",
+                "title": f"{target_metric}结构占比",
+                "dimension": target_dimension,
+                "metric": target_metric,
+                "aggregation": "sum" if has_numeric_metric else "count",
+                "top_n": min(top_n, 8) if top_n else 8,
+                "sort_order": sort_order,
+            }
+        )
+        add_chart(
+            {
+                "type": "treemap",
+                "title": f"{target_dimension}结构分层",
+                "dimension": target_dimension,
+                "metric": target_metric,
+                "aggregation": "sum" if has_numeric_metric else "count",
+                "top_n": min(top_n, 15) if top_n else 15,
+                "sort_order": sort_order,
+            }
+        )
+
+    def add_time_views(target_time_field: Optional[str], target_metric: Optional[str], target_metrics: List[str]) -> None:
+        if not target_time_field or not target_metric:
+            return
+        add_chart(
+            {
+                "type": "line",
+                "title": f"{target_metric}时间趋势",
+                "time_field": target_time_field,
+                "metric": target_metric,
+                "metrics": target_metrics or [target_metric],
+                "aggregation": "sum" if has_numeric_metric else "count",
+                "time_granularity": "month",
+            }
+        )
+        add_chart(
+            {
+                "type": "area",
+                "title": f"{target_metric}累计走势",
+                "time_field": target_time_field,
+                "metric": target_metric,
+                "metrics": [target_metric],
+                "aggregation": "sum" if has_numeric_metric else "count",
+                "time_granularity": "month",
+            }
+        )
+
+    def add_distribution_views(target_metric: Optional[str], target_dimension: Optional[str]) -> None:
+        if not target_metric or target_metric == COUNT_METRIC:
+            return
+        add_chart({"type": "histogram", "title": f"{target_metric}分布", "metric": target_metric})
+        add_chart({"type": "box", "title": f"{target_metric}箱线分析", "metric": target_metric, "dimension": target_dimension})
+
+    def add_relationship_view(target_metrics: List[str], target_dimension: Optional[str]) -> None:
+        numeric_fields = profile["numeric_fields"]
+        x_metric = target_metrics[0] if len(target_metrics) >= 1 else (numeric_fields[0] if len(numeric_fields) >= 1 else None)
+        y_metric = target_metrics[1] if len(target_metrics) >= 2 else (numeric_fields[1] if len(numeric_fields) >= 2 else None)
+        if x_metric and y_metric and x_metric != y_metric:
+            add_chart(
+                {
+                    "type": "scatter",
+                    "title": f"{x_metric}与{y_metric}关系",
+                    "x_metric": x_metric,
+                    "y_metric": y_metric,
+                    "label_field": target_dimension,
+                    "top_n": min(top_n, 300) if top_n else 300,
+                }
+            )
 
     # Explicit chart request: honor it first.
     if explicit_chart_types:
@@ -520,97 +669,26 @@ def build_fallback_plan(question: str, profile: Dict[str, Any]) -> Dict[str, Any
 
     # No explicit chart request: infer by question.
     if not charts and not explicit_chart_types:
-        if need_correlation and len(profile["numeric_fields"]) >= 2:
-            x_metric = metrics[0]
-            y_metric = metrics[1] if len(metrics) > 1 else profile["numeric_fields"][1]
-            add_chart(
-                {
-                    "type": "scatter",
-                    "title": f"{x_metric}与{y_metric}关系",
-                    "x_metric": x_metric,
-                    "y_metric": y_metric,
-                    "label_field": dimension,
-                    "top_n": min(top_n, 300) if top_n else 300,
-                }
-            )
-        elif need_distribution and has_numeric_metric and metric:
-            add_chart({"type": "histogram", "title": f"{metric}分布", "metric": metric})
-        elif need_trend and time_field and metric:
-            add_chart(
-                {
-                    "type": "line",
-                    "title": f"{metric}时间趋势",
-                    "time_field": time_field,
-                    "metrics": metrics or ([metric] if metric else []),
-                    "aggregation": "sum" if has_numeric_metric else "count",
-                    "time_granularity": "month",
-                }
-            )
-        elif need_ratio and dimension and metric:
-            add_chart(
-                {
-                    "type": "pie",
-                    "title": f"{metric}占比",
-                    "dimension": dimension,
-                    "metric": metric,
-                    "aggregation": "sum" if has_numeric_metric else "count",
-                    "top_n": min(top_n, 12) if top_n else None,
-                    "sort_order": sort_order,
-                }
-            )
-        elif dimension and metric:
-            add_chart(
-                {
-                    "type": "bar",
-                    "title": f"{dimension}维度的{metric}对比",
-                    "dimension": dimension,
-                    "metric": metric,
-                    "metrics": metrics,
-                    "aggregation": "sum" if has_numeric_metric else "count",
-                    "top_n": top_n,
-                    "sort_order": sort_order,
-                }
-            )
+        if need_correlation:
+            add_relationship_view(metrics, dimension)
+        if need_distribution:
+            add_distribution_views(metric, dimension)
+        if need_trend:
+            add_time_views(time_field, metric, metrics)
+        if need_ratio:
+            add_dimension_views(dimension, metric, metrics)
+        if not charts:
+            add_dimension_views(dimension, metric, metrics)
+            add_time_views(time_field, metric, metrics)
+            add_distribution_views(metric, dimension)
+            add_relationship_view(metrics, dimension)
 
-    # If user did not ask clearly, provide 2-3 useful views.
-    if not explicit_chart_types and len(charts) <= 1:
-        if dimension and metric and not any(c["type"] == "bar" for c in charts):
-            add_chart(
-                {
-                    "type": "bar",
-                    "title": f"{dimension}维度的{metric}对比",
-                    "dimension": dimension,
-                    "metric": metric,
-                    "metrics": metrics,
-                    "aggregation": "sum" if has_numeric_metric else "count",
-                    "top_n": top_n,
-                    "sort_order": sort_order,
-                }
-            )
-        if dimension and metric and need_ratio and not any(c["type"] == "pie" for c in charts):
-            add_chart(
-                {
-                    "type": "pie",
-                    "title": f"{metric}结构占比",
-                    "dimension": dimension,
-                    "metric": metric,
-                    "aggregation": "sum" if has_numeric_metric else "count",
-                    "top_n": min(top_n, 8) if top_n else None,
-                    "sort_order": sort_order,
-                }
-            )
-        if time_field and metric and not any(c["type"] in {"line", "area"} for c in charts):
-            add_chart(
-                {
-                    "type": "line",
-                    "title": f"{metric}时间趋势",
-                    "time_field": time_field,
-                    "metric": metric,
-                    "metrics": [metric],
-                    "aggregation": "sum" if has_numeric_metric else "count",
-                    "time_granularity": "month",
-                }
-            )
+    # If user did not ask clearly, provide a broader set of useful views.
+    if not explicit_chart_types:
+        add_dimension_views(dimension, metric, metrics)
+        add_time_views(time_field, metric, metrics)
+        add_distribution_views(metric, dimension)
+        add_relationship_view(metrics, dimension)
 
     if not charts and dimension and not explicit_chart_types:
         add_chart(
@@ -641,6 +719,8 @@ def build_fallback_plan(question: str, profile: Dict[str, Any]) -> Dict[str, Any
         base_metric = profile["numeric_fields"][0]
         add_chart({"type": "histogram", "title": f"{base_metric}分布", "metric": base_metric})
 
+    selected_charts = charts[:requested_chart_count]
+
     return {
         "subject": question or "自动分析",
         "metric": metric,
@@ -651,8 +731,9 @@ def build_fallback_plan(question: str, profile: Dict[str, Any]) -> Dict[str, Any
         "sort_order": sort_order,
         "return_all": top_n is None and _request_all_categories(question),
         "requested_chart_types": explicit_chart_types,
+        "requested_chart_count": requested_chart_count,
         "unavailable_chart_types": unavailable_chart_types,
-        "charts": charts[:4],
+        "charts": selected_charts,
     }
 
 
