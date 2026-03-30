@@ -269,7 +269,7 @@ APP_STYLE = """
         position: relative;
     }
     [data-testid="stBaseButton-secondary"]::after {
-        content: "选择文件";
+        content: "浏览文件";
         color: #5c7390;
         position: absolute;
         inset: 0;
