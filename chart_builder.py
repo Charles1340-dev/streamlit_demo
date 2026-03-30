@@ -8,6 +8,7 @@ import plotly.express as px
 
 PLOT_TEMPLATE = "plotly_white"
 TEN_THOUSAND = 10000
+HUNDRED_MILLION = 100000000
 
 
 def _is_numeric_like(series: pd.Series) -> bool:
@@ -47,13 +48,33 @@ def _format_numeric_in_ten_thousand(series: pd.Series) -> pd.Series:
     return (numeric / TEN_THOUSAND).round(2)
 
 
-def _prepare_chart_dataframe(df: pd.DataFrame, chart_spec: Dict[str, Any]) -> pd.DataFrame:
+def _pick_display_unit(series: pd.Series) -> tuple[float, str]:
+    numeric = pd.to_numeric(series, errors="coerce").dropna()
+    if numeric.empty:
+        return 1.0, ""
+    max_abs = float(numeric.abs().max())
+    if max_abs >= HUNDRED_MILLION:
+        return float(HUNDRED_MILLION), "亿"
+    if max_abs >= TEN_THOUSAND:
+        return float(TEN_THOUSAND), "万"
+    return 1.0, ""
+
+
+def _scale_series(series: pd.Series, scale: float) -> pd.Series:
+    numeric = pd.to_numeric(series, errors="coerce")
+    if scale == 1.0:
+        return numeric.round(2)
+    return (numeric / scale).round(2)
+
+
+def _prepare_chart_dataframe(df: pd.DataFrame, chart_spec: Dict[str, Any]) -> tuple[pd.DataFrame, Dict[str, str]]:
     prepared = df.copy()
     chart_type = chart_spec.get("type")
     x_field = chart_spec.get("x_field")
     y_fields = chart_spec.get("y_fields") or []
     y_field = chart_spec.get("y_field")
     metric = chart_spec.get("metric")
+    unit_map: Dict[str, str] = {}
 
     if x_field and x_field in prepared.columns and _looks_like_date_field(x_field, prepared[x_field]):
         prepared[x_field] = prepared[x_field].map(_to_chinese_date_text)
@@ -67,28 +88,37 @@ def _prepare_chart_dataframe(df: pd.DataFrame, chart_spec: Dict[str, Any]) -> pd
         numeric_targets.add(x_field)
 
     for column in numeric_targets:
-        prepared[column] = _format_numeric_in_ten_thousand(prepared[column])
+        scale, unit = _pick_display_unit(prepared[column])
+        prepared[column] = _scale_series(prepared[column], scale)
+        unit_map[column] = unit
 
-    return prepared
+    return prepared, unit_map
 
 
-def _apply_axis_labels(fig, chart_type: str, chart_spec: Dict[str, Any]) -> None:
+def _apply_axis_labels(fig, chart_type: str, chart_spec: Dict[str, Any], unit_map: Dict[str, str]) -> None:
     x_field = chart_spec.get("x_field")
     y_field = chart_spec.get("y_field")
     metric = chart_spec.get("metric")
+    y_fields = chart_spec.get("y_fields") or []
+
+    def with_unit(label: str | None, unit: str) -> str | None:
+        if not label:
+            return None
+        return f"{label}（{unit}）" if unit else label
 
     if chart_type in {"bar", "line", "area", "funnel"}:
-        fig.update_yaxes(title_text="数值（万元）")
+        primary_field = y_fields[0] if y_fields else None
+        fig.update_yaxes(title_text=with_unit("数值", unit_map.get(primary_field or "", "")) or "数值")
     elif chart_type == "scatter":
-        fig.update_xaxes(title_text=f"{x_field}（万元）" if x_field else "横轴")
-        fig.update_yaxes(title_text=f"{y_field}（万元）" if y_field else "数值（万元）")
+        fig.update_xaxes(title_text=with_unit(x_field or "横轴", unit_map.get(x_field or "", "")) or "横轴")
+        fig.update_yaxes(title_text=with_unit(y_field or "数值", unit_map.get(y_field or "", "")) or "数值")
     elif chart_type == "histogram":
-        fig.update_xaxes(title_text=f"{metric}（万元）" if metric else "数值（万元）")
+        fig.update_xaxes(title_text=with_unit(metric or "数值", unit_map.get(metric or "", "")) or "数值")
     elif chart_type == "box":
         if chart_spec.get("dimension"):
-            fig.update_yaxes(title_text=f"{metric}（万元）" if metric else "数值（万元）")
+            fig.update_yaxes(title_text=with_unit(metric or "数值", unit_map.get(metric or "", "")) or "数值")
         else:
-            fig.update_yaxes(title_text="数值（万元）")
+            fig.update_yaxes(title_text=with_unit("数值", unit_map.get(metric or "", "")) or "数值")
 
 
 def _apply_common_layout(fig):
@@ -106,7 +136,7 @@ def build_plotly_figure(chart_spec: Dict[str, Any]):
     chart_type = chart_spec.get("type")
     title = chart_spec.get("title", "图表")
     table = chart_spec.get("table", [])
-    df = _prepare_chart_dataframe(pd.DataFrame(table), chart_spec)
+    df, unit_map = _prepare_chart_dataframe(pd.DataFrame(table), chart_spec)
 
     if chart_type in {"bar", "line", "area", "pie", "funnel", "treemap"} and df.empty:
         return _apply_common_layout(px.scatter(title=f"{title}（暂无数据）"))
@@ -116,7 +146,9 @@ def build_plotly_figure(chart_spec: Dict[str, Any]):
         y_fields = chart_spec.get("y_fields") or []
         value_field = y_fields[0] if y_fields else None
         fig = px.pie(df, names=x_field, values=value_field, title=title)
-        fig.update_traces(textposition="inside", texttemplate="%{label}<br>%{value:.2f}万")
+        value_unit = unit_map.get(value_field or "", "")
+        value_suffix = value_unit if value_unit else ""
+        fig.update_traces(textposition="inside", texttemplate=f"%{{label}}<br>%{{value:.2f}}{value_suffix}")
         return _apply_common_layout(fig)
 
     if chart_type == "treemap":
@@ -124,7 +156,9 @@ def build_plotly_figure(chart_spec: Dict[str, Any]):
         y_fields = chart_spec.get("y_fields") or []
         value_field = y_fields[0] if y_fields else None
         fig = px.treemap(df, path=[px.Constant("全部"), x_field], values=value_field, title=title)
-        fig.update_traces(texttemplate="%{label}<br>%{value:.2f}万")
+        value_unit = unit_map.get(value_field or "", "")
+        value_suffix = value_unit if value_unit else ""
+        fig.update_traces(texttemplate=f"%{{label}}<br>%{{value:.2f}}{value_suffix}")
         return _apply_common_layout(fig)
 
     if chart_type == "funnel":
@@ -132,7 +166,7 @@ def build_plotly_figure(chart_spec: Dict[str, Any]):
         y_fields = chart_spec.get("y_fields") or []
         value_field = y_fields[0] if y_fields else None
         fig = px.funnel(df, y=x_field, x=value_field, title=title)
-        _apply_axis_labels(fig, chart_type, chart_spec)
+        _apply_axis_labels(fig, chart_type, chart_spec, unit_map)
         return _apply_common_layout(fig)
 
     if chart_type in {"bar", "line", "area"}:
@@ -154,7 +188,7 @@ def build_plotly_figure(chart_spec: Dict[str, Any]):
                 fig = px.area(df, x=x_field, y=y_field, title=title)
             else:
                 fig = px.line(df, x=x_field, y=y_field, markers=True, title=title)
-        _apply_axis_labels(fig, chart_type, chart_spec)
+        _apply_axis_labels(fig, chart_type, chart_spec, unit_map)
         return _apply_common_layout(fig)
 
     if chart_type == "scatter":
@@ -164,13 +198,13 @@ def build_plotly_figure(chart_spec: Dict[str, Any]):
         y_field = chart_spec.get("y_field")
         label_field = chart_spec.get("label_field")
         fig = px.scatter(df, x=x_field, y=y_field, hover_name=label_field, title=title)
-        _apply_axis_labels(fig, chart_type, chart_spec)
+        _apply_axis_labels(fig, chart_type, chart_spec, unit_map)
         return _apply_common_layout(fig)
 
     if chart_type == "histogram":
         metric = chart_spec.get("metric")
         fig = px.histogram(df, x=metric, nbins=30, title=title)
-        _apply_axis_labels(fig, chart_type, chart_spec)
+        _apply_axis_labels(fig, chart_type, chart_spec, unit_map)
         return _apply_common_layout(fig)
 
     if chart_type == "box":
@@ -180,7 +214,7 @@ def build_plotly_figure(chart_spec: Dict[str, Any]):
             fig = px.box(df, x=dimension, y=metric, title=title)
         else:
             fig = px.box(df, y=metric, title=title)
-        _apply_axis_labels(fig, chart_type, chart_spec)
+        _apply_axis_labels(fig, chart_type, chart_spec, unit_map)
         return _apply_common_layout(fig)
 
     fig = px.bar(title=f"{title}（暂不支持的图表类型，已降级为柱图）")

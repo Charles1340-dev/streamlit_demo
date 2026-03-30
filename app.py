@@ -345,6 +345,7 @@ APP_STYLE = """
 
 SUPPORTED_CHARTS = ["bar", "line", "pie", "scatter", "area", "histogram", "box", "funnel", "treemap"]
 TEN_THOUSAND = 10000
+HUNDRED_MILLION = 100000000
 SUPPORTED_CHART_LABELS = {
     "bar": "柱状图",
     "line": "折线图",
@@ -448,10 +449,25 @@ def _format_chart_table(df: pd.DataFrame, chart: Dict[str, Any]) -> pd.DataFrame
     if chart.get("type") == "scatter" and x_field and x_field in formatted.columns:
         numeric_targets.add(x_field)
 
+    def pick_display_unit(series: pd.Series) -> tuple[float, str]:
+        numeric = pd.to_numeric(series, errors="coerce").dropna()
+        if numeric.empty:
+            return 1.0, ""
+        max_abs = float(numeric.abs().max())
+        if max_abs >= HUNDRED_MILLION:
+            return float(HUNDRED_MILLION), "亿"
+        if max_abs >= TEN_THOUSAND:
+            return float(TEN_THOUSAND), "万"
+        return 1.0, ""
+
     for column in list(numeric_targets):
         numeric = pd.to_numeric(formatted[column], errors="coerce")
         if numeric.notna().mean() >= 0.8:
-            formatted[column] = (numeric / TEN_THOUSAND).map(lambda v: f"{v:,.2f} 万" if pd.notna(v) else "")
+            scale, unit = pick_display_unit(formatted[column])
+            scaled = numeric if scale == 1.0 else (numeric / scale)
+            formatted[column] = scaled.map(
+                lambda v: f"{v:,.2f}{(' ' + unit) if unit else ''}" if pd.notna(v) else ""
+            )
 
     return formatted
 
