@@ -734,6 +734,7 @@ def _run_if_needed(question: str, run: bool) -> None:
         "result": run_result.result,
         "insights": run_result.insights,
         "llm_error": run_result.llm_error,
+        "llm_error_display": run_result.llm_error_display,
         "llm_used": run_result.llm_used,
         "plan_warnings": run_result.plan_warnings,
         "plan_source": run_result.plan_source,
@@ -786,7 +787,7 @@ def _render_analysis_result() -> None:
         st.success("本次分析已调用大模型生成计划与结论。")
     elif analysis_result.get("llm_error"):
         _render_mode_badge("fallback", "当前模式：规则兜底")
-        st.info(f"本次未成功调用大模型，已切换本地兜底分析：{analysis_result['llm_error']}")
+        st.info(analysis_result.get("llm_error_display") or "本次未成功调用大模型，已切换本地规则兜底分析。")
 
     st.markdown('<div class="panel-card">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">本次需求</div>', unsafe_allow_html=True)

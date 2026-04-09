@@ -29,6 +29,7 @@ class AnalysisRunResult:
     result: Dict[str, Any]
     insights: Dict[str, Any]
     llm_error: str | None
+    llm_error_display: str | None
     llm_used: bool
     plan_warnings: List[str]
     plan_source: str
@@ -55,6 +56,21 @@ def build_fallback_insights(result: Dict[str, Any]) -> Dict[str, Any]:
         "risks": risks,
         "suggestion": result.get("suggestion", "建议结合业务口径进一步确认字段含义。"),
     }
+
+
+def build_friendly_llm_error_message(error: str | None) -> str | None:
+    text = (error or "").strip()
+    if not text:
+        return None
+
+    lowered = text.lower()
+    if any(token in lowered for token in ["502", "bad gateway", "gateway", "connect", "connection", "timeout", "timed out", "temporarily unavailable"]):
+        return "大模型服务当前网络不稳定，系统已自动切换为本地规则分析。你可以稍后重试，或继续查看当前生成结果。"
+    if any(token in lowered for token in ["401", "403", "authentication", "unauthorized", "api key", "incorrect api key"]):
+        return "大模型连接鉴权失败，系统已自动切换为本地规则分析。请检查 API Key 或模型连接配置。"
+    if any(token in lowered for token in ["rate limit", "429", "quota"]):
+        return "大模型调用频率已达到上限，系统已自动切换为本地规则分析。请稍后再试。"
+    return "大模型暂时不可用，系统已自动切换为本地规则分析。你可以稍后重试，或继续查看当前生成结果。"
 
 
 def summarize_plan(plan: Dict[str, Any]) -> List[str]:
@@ -87,6 +103,7 @@ def run_analysis(
     client: DeepSeekClient,
 ) -> AnalysisRunResult:
     llm_error = None
+    llm_error_display = None
     llm_used = False
 
     try:
@@ -99,6 +116,7 @@ def run_analysis(
         plan_source = "llm"
     except Exception as exc:
         llm_error = str(exc)
+        llm_error_display = build_friendly_llm_error_message(llm_error)
         raw_plan = build_fallback_plan(question, profile)
         plan_source = "fallback"
 
@@ -122,6 +140,7 @@ def run_analysis(
         result=result,
         insights=insights,
         llm_error=llm_error,
+        llm_error_display=llm_error_display,
         llm_used=llm_used,
         plan_warnings=plan_warnings,
         plan_source=plan_source,
