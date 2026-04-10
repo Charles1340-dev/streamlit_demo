@@ -14,7 +14,7 @@ from chart_builder import build_plotly_figure
 from excel_parser import build_dataframe_profile, load_uploaded_table
 from llm_client import is_local_or_private_base_url
 
-st.set_page_config(page_title="智能表格分析工作台", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="智能分析工作台", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 
 APP_STYLE = """
 <style>
